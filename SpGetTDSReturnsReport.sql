@@ -1,6 +1,5 @@
-alter Procedure SpGetTDSCalculated  
+create Procedure SpGetTDSReturnsReport  
  @to_date DATE ,    
- @clientid int =null,  
  @FiscYear varchar(12)  
 As                                                           
 begin  
@@ -23,11 +22,17 @@ begin
 	OpeningBalLT Decimal(10,2),
 	Adjusted_Short_Term DECIMAL(10, 2),  
     Adjusted_Long_Term DECIMAL(10, 2),
-		ClosingBalST Decimal(10,2),  
+	ClosingBalST Decimal(10,2),  
 	ClosingBalLT Decimal(10,2),
 	TaxableGain DECIMAL(10, 2),  
 	ST_Tax DECIMAL(10, 2),  
 	LT_Tax DECIMAL(10, 2),   
+	ST_Surcharge DECIMAL(10, 2),  
+	LT_Surcharge DECIMAL(10, 2), 
+	ST_Cess DECIMAL(10, 2),  
+	LT_Cess DECIMAL(10, 2), 
+	ST_TaxTotal DECIMAL(10, 2), 
+	LT_TaxTotal DECIMAL(10, 2), 
 	ST_TaxPercentage DECIMAL(10, 2),  
 	LT_TaxPercentage DECIMAL(10, 2) ,
 
@@ -50,9 +55,16 @@ begin
  FROM Tax_Profit_Details_Cash_TDS 
  WHERE
  TranDateSale >= @quarter_start_date and TranDateSale <= @to_date
- and clientid=@clientid   
  GROUP BY clientid,TranDateSale order by TranDateSale ;
+ --select * from Client_Profit_Sums
+ DECLARE @distinctClient VARCHAR(50);  
 
+DECLARE client_cursor CURSOR FOR  
+SELECT distinct Client FROM  Client_Profit_Sums   
+OPEN client_cursor;    
+FETCH NEXT FROM client_cursor INTO @distinctClient
+WHILE @@FETCH_STATUS = 0  
+BEGIN
 DECLARE @Client VARCHAR(50);  
 DECLARE @TransSaleDate DATETIME;  
 DECLARE @Sum_Short_Term_Profit DECIMAL(10, 2);  
@@ -68,7 +80,7 @@ DECLARE @OpeningBalST DECIMAL(10, 2)
 DECLARE @OpeningBalLT DECIMAL(10, 2)
 declare @previoustrandate date
 DECLARE profit_cursor CURSOR FOR  
-SELECT  Client, TransSaleDate,  Sum_Short_Term_Profit,  Sum_Long_Term_Profit FROM  Client_Profit_Sums  where client=@clientid  order by TransSaleDate ---- for specific client  
+SELECT  Client, TransSaleDate,  Sum_Short_Term_Profit,  Sum_Long_Term_Profit FROM  Client_Profit_Sums where Client=@distinctClient  order by TransSaleDate ---- for specific client  
 OPEN profit_cursor;    
 FETCH NEXT FROM profit_cursor INTO @Client, @TransSaleDate, @Sum_Short_Term_Profit, @Sum_Long_Term_Profit;   
 WHILE @@FETCH_STATUS = 0  
@@ -100,7 +112,9 @@ BEGIN
    --set @Sum_Short_Term_Profit=@Sum_Short_Term_Profit+@BuyNotFound;
    --update Client_Profit_Sums set Sum_Short_Term_Profit=@Sum_Short_Term_Profit where Client=@Client  and TransSaleDate=@TransSaleDate
    --end
-   DECLARE @inputDate DATE = @TransSaleDate;
+
+
+    DECLARE @inputDate DATE = @TransSaleDate;
    DECLARE @startDate DATE = DATEFROMPARTS(YEAR(@inputDate), MONTH(@inputDate), 1);
    DECLARE @endDate DATE = EOMONTH(@inputDate);
    CREATE TABLE #temp (
@@ -199,8 +213,6 @@ BEGIN
    update Client_Profit_Sums set Sum_Long_Term_Profit=@Sum_Long_Term_Profit where Client=@Client  and TransSaleDate=@TransSaleDate
    end
    drop table #temp
-
-
   ------------------------------------ Daily AdjustMent------------------------------------------------------------------------------------------------ 
   
   DECLARE @Adjusted_Short_Term DECIMAL(10, 2) = CASE  
@@ -259,8 +271,7 @@ BEGIN
     set @Difference  = @Adjusted_Long_Term + @PrevAdjusted_Long_Term;  
     SET @Adjusted_Long_Term = @Difference;   
 	set @ClosingBal_LT=@Adjusted_Long_Term
-  END;  
-  
+  END;    
   IF @OpeningBalST < 0 AND @Adjusted_Short_Term > 0 or @OpeningBalST < 0 AND @Adjusted_Short_Term < 0 or @OpeningBalST >= 0 AND @Adjusted_Short_Term < 0   
   BEGIN 
   print 'inside'
@@ -272,20 +283,16 @@ BEGIN
 	set @ClosingBal_ST=@Adjusted_Short_Term
 	--print 'After settung'
 	--print @ClosingBal_ST  
-	END;  
-  
+	END;   
   if @OpeningBalLT>=0 and @Adjusted_Long_Term>=0 and @DailySetOffLT>0
   begin 
     set @ClosingBal_LT=@OpeningBalLT+@Adjusted_Long_Term
   end
-    if @OpeningBalST>=0 and @Adjusted_Short_Term>=0 and @DailySetOffST>0
+  if @OpeningBalST>=0 and @Adjusted_Short_Term>=0 and @DailySetOffST>0
   begin 
     set @ClosingBal_ST=@OpeningBalST+@Adjusted_Short_Term
   end
    
-  --print 'closing bal'
-  --print @ClosingBal_LT
-  --print @ClosingBal_ST
    ----------------------- Update the table with adjusted values-------------------------------------------------------------  
    UPDATE Client_Profit_Sums  
         SET Adjusted_Short_Term = @Adjusted_Short_Term,  
@@ -300,18 +307,14 @@ BEGIN
 		  ClosingBalST=@ClosingBal_ST ,
 
    TaxableGain=@Adjusted_Short_Term+@Adjusted_Long_Term,  
+
    ST_Tax=case when @Adjusted_Short_Term>0 then   
    CASE  
    WHEN  @Adjusted_Short_Term > 5000000 THEN     
-     @Adjusted_Short_Term * (  
-     SELECT Total_tax_rate / 100 FROM TaxratesMaster  
-     WHERE Gain_type = 'Short Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear  
-                )  
+     @Adjusted_Short_Term * (  SELECT Tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Short Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear )  
    WHEN  @Adjusted_Short_Term <= 5000000 THEN   
     @Adjusted_Short_Term * (  
-     SELECT Total_tax_rate / 100 FROM TaxratesMaster  
-     WHERE Gain_type = 'Short Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear  
-                )  
+     SELECT Tax_rate / 100 FROM TaxratesMaster WHERE Gain_type = 'Short Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear )  
    end  
    else 
    0
@@ -320,17 +323,96 @@ BEGIN
    CASE  
    WHEN  @Adjusted_Long_Term > 5000000 THEN  
    @Adjusted_Long_Term * (  
-     SELECT Total_tax_rate / 100 FROM TaxratesMaster  
-     WHERE Gain_type = 'Long Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear  
-                )  
+     SELECT Tax_rate / 100 FROM TaxratesMaster WHERE Gain_type = 'Long Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear  )  
    WHEN  @Adjusted_Long_Term <= 5000000 THEN   
-   @Adjusted_Long_Term * (  
-     SELECT Total_tax_rate / 100 FROM TaxratesMaster  
-     WHERE Gain_type = 'Long Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear  
-                )  
+   @Adjusted_Long_Term * (  SELECT Tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Long Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear  )  
    end  
    else 0  
    end,  
+
+    ST_TaxTotal=case when @Adjusted_Short_Term>0 then   
+   CASE  
+   WHEN  @Adjusted_Short_Term > 5000000 THEN     
+     @Adjusted_Short_Term * (  SELECT Total_tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Short Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear )  
+   WHEN  @Adjusted_Short_Term <= 5000000 THEN   
+    @Adjusted_Short_Term * (  
+     SELECT Total_tax_rate / 100 FROM TaxratesMaster WHERE Gain_type = 'Short Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear )  
+   end  
+   else 
+   0
+   end,  
+   LT_TaxTotal=case when @Adjusted_Long_Term>0 then   
+   CASE  
+   WHEN  @Adjusted_Long_Term > 5000000 THEN  
+   @Adjusted_Long_Term * (  
+     SELECT Total_tax_rate / 100 FROM TaxratesMaster WHERE Gain_type = 'Long Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear  )  
+   WHEN  @Adjusted_Long_Term <= 5000000 THEN   
+   @Adjusted_Long_Term * (  SELECT Total_tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Long Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear  )  
+   end  
+   else 0  
+   end, 
+
+   ST_Surcharge=case when @Adjusted_Short_Term>0 then   
+   CASE  
+   WHEN  @Adjusted_Short_Term > 5000000 THEN     
+     @Adjusted_Short_Term * (  
+     SELECT Tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Short Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear ) 
+	 *(SELECT Surcharge / 100 FROM TaxratesMaster  WHERE Gain_type = 'Short Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear )
+   WHEN  @Adjusted_Short_Term <= 5000000 THEN   
+   0
+   end  
+   else 
+   0
+   end,  
+   LT_Surcharge=case when @Adjusted_Long_Term>0 then   
+   CASE  
+   WHEN  @Adjusted_Long_Term > 5000000 THEN  
+   @Adjusted_Long_Term * (  
+     SELECT Tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Long Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear  ) 
+	 *( SELECT Surcharge / 100 FROM TaxratesMaster  WHERE Gain_type = 'Long Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear) 
+   WHEN  @Adjusted_Long_Term <= 5000000 THEN   
+   0
+   end  
+   else 0  
+   end,
+
+
+
+   ST_Cess=case when @Adjusted_Short_Term>0 then   
+   CASE  
+   WHEN  @Adjusted_Short_Term > 5000000 THEN     
+     @Adjusted_Short_Term * (  
+     SELECT Tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Short Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear ) 
+	 *(SELECT Surcharge / 100 FROM TaxratesMaster WHERE Gain_type = 'Short Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear)
+	 *(SELECT Cess / 100 FROM TaxratesMaster WHERE Gain_type = 'Short Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear)
+   WHEN  @Adjusted_Short_Term <= 5000000 THEN   
+    @Adjusted_Short_Term * (  
+     SELECT Tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Short Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear ) 
+	 *(SELECT Cess / 100 FROM TaxratesMaster WHERE Gain_type = 'Short Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear) 
+   end  
+   else 
+   0
+   end,  
+   LT_Cess=case when @Adjusted_Long_Term>0 then   
+   CASE  
+   WHEN  @Adjusted_Long_Term > 5000000 THEN  
+   @Adjusted_Long_Term * (  
+     SELECT Tax_rate / 100 FROM TaxratesMaster WHERE Gain_type = 'Long Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear) 
+	*(SELECT Surcharge / 100 FROM TaxratesMaster WHERE Gain_type = 'Long Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear) 
+	*(SELECT Cess / 100 FROM TaxratesMaster WHERE Gain_type = 'Long Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear) 
+
+   WHEN  @Adjusted_Long_Term <= 5000000 THEN   
+   @Adjusted_Long_Term * (  
+     SELECT Tax_rate / 100 FROM TaxratesMaster WHERE Gain_type = 'Long Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear) 
+	*(SELECT Cess / 100 FROM TaxratesMaster WHERE Gain_type = 'Long Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear) 
+
+   end  
+   else 0  
+   end,
+
+
+
+
    ST_TaxPercentage=case when @Adjusted_Short_Term>0 then   
    CASE  
    WHEN  @Adjusted_Short_Term > 5000000 THEN   
@@ -363,7 +445,7 @@ BEGIN
    end  
         WHERE  
   --Client = @Client   
-  Client=@clientid -- for specific client  
+  Client=@distinctClient -- for specific client  
   AND TransSaleDate = @TransSaleDate;  
   ------------end------------------------------------------------------------------------------------------------
   
@@ -392,26 +474,32 @@ BEGIN
 	begin
 		declare @totalLT_tax decimal(10,2);
 		print 'reverse entry'
+		print @Client
 			select @totalLT_tax=case when @OpeningBalLT>0 then  
 			CASE  WHEN  @OpeningBalLT > 5000000 THEN  @OpeningBalLT * (SELECT Total_tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Long Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear)  
 			WHEN  @OpeningBalLT <= 5000000 THEN @OpeningBalLT * (SELECT Total_tax_rate / 100 FROM TaxratesMaster WHERE Gain_type = 'Long Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear  )  
 			end  else 0  end
 			UPDATE Client_Profit_Sums
-			SET ST_Tax = -ABS((@totalLT_tax-(SELECT ST_Tax FROM Client_Profit_Sums WHERE TransSaleDate = @TransSaleDate)))
-			WHERE TransSaleDate = @TransSaleDate;
+			SET ST_Tax = -ABS((@totalLT_tax-(SELECT ST_Tax FROM Client_Profit_Sums WHERE TransSaleDate = @TransSaleDate and Client=@Client)))
+			WHERE TransSaleDate = @TransSaleDate and Client=@Client;
 	end
 	if(@Previous_OpeningST>0 and @Sum_Short_Term_Profit_today<0)
 	 begin
 	 print 'reverse entry short'
 			declare @totalST_tax decimal(10,2);
-			select @totalST_tax=case when @OpeningBalST>0 then   
+			declare @cc int;
+			   select @cc=count(*) from Client_Profit_Sums WHERE TransSaleDate = @TransSaleDate and Client=@distinctClient;
+			   print @cc
+			   print @OpeningBalST
+			   select @totalST_tax=case when @OpeningBalST>0 then   
 			   CASE  WHEN  @OpeningBalST > 5000000 THEN  @OpeningBalST * (SELECT Total_tax_rate / 100 FROM TaxratesMaster WHERE Gain_type = 'Short Term' AND YTD_gain_range = '> 50,00,000' AND finyear = @FiscYear)
 			   WHEN  @OpeningBalST <= 5000000 THEN @OpeningBalST * ( SELECT Total_tax_rate / 100 FROM TaxratesMaster  WHERE Gain_type = 'Short Term' AND YTD_gain_range = '<= 50,00,000' AND finyear = @FiscYear)  
 			   end else  0 end
 			   print @totalSt_tax
+			   
 			UPDATE Client_Profit_Sums
-			SET ST_Tax =-((@totalST_tax-(SELECT ST_Tax FROM Client_Profit_Sums WHERE TransSaleDate = @TransSaleDate)))
-			WHERE TransSaleDate = @TransSaleDate;
+			SET ST_Tax =-((@totalST_tax-(SELECT ST_Tax FROM Client_Profit_Sums WHERE TransSaleDate = @TransSaleDate and Client=@Client)))
+			WHERE TransSaleDate = @TransSaleDate and Client=@Client;
 	 end
 	--if(select SUM(ST_Tax+LT_Tax+@BuyNotFoundTax) from Client_Profit_Sums where TransSaleDate=@to_date)>0
 	
@@ -424,101 +512,38 @@ BEGIN
  DEALLOCATE profit_cursor;  
 
  print 'JE'
- 
- --------------------Journal Entry----------------------------------------------------------------------------------------------------
- if exists(SELECT 1 FROM Client_Profit_Sums WHERE TransSaleDate = @to_date AND ST_Tax > 0 AND LT_Tax > 0)
-	begin
-	print 'condition 1'
-	INSERT INTO TDS_JournalEntry (Client, ClientCode, TransSaleDate, TotalTax, Description)  
-	SELECT  
-    t.Client,  
-    RTRIM(c.curlocation) + RTRIM(c.tradecode),  
-    t.TransSaleDate,  
-    SUM(t.ST_Tax+t.LT_Tax),  
-    CASE  
-        WHEN CAST( t.ST_TaxPercentage AS INT) > 0 AND CAST( t.LT_TaxPercentage AS INT) > 0 THEN  
-            'on Long term capital gain tax ' + CONVERT(VARCHAR(10), t.LT_TaxPercentage) +  
-            ' and on Short term capital gain tax ' + CONVERT(VARCHAR(10), t.ST_TaxPercentage)  
-        WHEN CAST( t.LT_TaxPercentage AS INT) > 0 THEN  
-            'on Long term capital gain tax ' + CONVERT(VARCHAR(10), t.LT_TaxPercentage)  
-        WHEN CAST( t.ST_TaxPercentage AS INT) > 0 THEN  
-            'on Short term capital gain tax ' + CONVERT(VARCHAR(10), t.ST_TaxPercentage)  
-        ELSE  
-            NULL  
-    END AS Description  
-FROM  
-    Client c  
-JOIN  
-    Client_Profit_Sums t ON c.ClientID = t.Client  
-WHERE  
-    t.Client = @clientid  
-    AND t.TransSaleDate = @to_date  
-GROUP BY  
-    t.CLIENT, c.CURLOCATION, c.TRADECODE, t.TransSaleDate, t.ST_TaxPercentage, t.LT_TaxPercentage;  
-	end   
- if exists(SELECT 1 FROM Client_Profit_Sums WHERE TransSaleDate = @to_date AND ST_Tax <= 0 AND LT_Tax > 0) or
-	exists(SELECT 1 FROM Client_Profit_Sums WHERE TransSaleDate = @to_date AND ST_Tax > 0 AND LT_Tax <= 0)
-	print 'condition 2'
-	begin
-	if(select ST_Tax from Client_Profit_Sums WHERE TransSaleDate = @to_date)!=0
-	begin 
-	INSERT INTO TDS_JournalEntry (Client, ClientCode, TransSaleDate, TotalTax, Description)  
-	SELECT  
-    t.Client,  
-    RTRIM(c.curlocation) + RTRIM(c.tradecode),  
-    t.TransSaleDate,  
-    SUM(t.ST_Tax),  
-    'on Short term capital gain tax ' + CONVERT(VARCHAR(10), t.ST_TaxPercentage)  
-	FROM  
-    Client c  
-	JOIN  
-    Client_Profit_Sums t ON c.ClientID = t.Client  
-	WHERE  
-    t.Client = @clientid  
-    AND t.TransSaleDate= @to_date  
-	GROUP BY  
-    t.CLIENT, c.CURLOCATION, c.TRADECODE, t.TransSaleDate, t.ST_TaxPercentage, t.LT_TaxPercentage; 
-	end
-	if(select LT_Tax from Client_Profit_Sums WHERE TransSaleDate = @to_date)!=0
-	begin 
-	INSERT INTO TDS_JournalEntry (Client, ClientCode, TransSaleDate, TotalTax, Description)  
-	SELECT  
-    t.Client,  
-    RTRIM(c.curlocation) + RTRIM(c.tradecode),  
-    t.TransSaleDate,  
-    SUM(t.LT_Tax),  
-    'on Long term capital gain tax ' + CONVERT(VARCHAR(10), t.LT_TaxPercentage)  
-	FROM  
-    Client c  
-	JOIN  
-    Client_Profit_Sums t ON c.ClientID = t.Client  
-	WHERE  
-    t.Client = @clientid  
-    AND t.TransSaleDate = @to_date  
-	GROUP BY  
-    t.CLIENT, c.CURLOCATION, c.TRADECODE, t.TransSaleDate, t.ST_TaxPercentage, t.LT_TaxPercentage;
-	end
-	end
-	
- --------------------------end-----------------------------------------------------------------------------------------------------
-select * from Client_Profit_Sums --where TransSaleDate between @to_date and @to_date  
 
-delete from Tax_Daily_Profit_Summary
---insert into Tax_Daily_Profit_Summary(Client,TransSaleDate,
---Sum_Short_Term_Profit,Sum_Long_Term_Profit,DailySetOffLT ,DailySetOffST,Profit,OpeningBalLT,OpeningBalST,Adjusted_Short_Term,Adjusted_Long_Term,
---TaxableGain,ST_Tax,LT_Tax,ST_TaxPercentage,LT_TaxPercentage)
--- select  Client,TransSaleDate,
---Sum_Short_Term_Profit,Sum_Long_Term_Profit,DailySetOffLT ,DailySetOffST,Profit,OpeningBalLT,OpeningBalST,Adjusted_Short_Term,Adjusted_Long_Term,
---TaxableGain,ST_Tax,LT_Tax,ST_TaxPercentage,LT_TaxPercentage from Client_Profit_Sums where TransSaleDate= @to_date
- 
-
- insert into Tax_Daily_Profit_Summary(Client,TransSaleDate,
+ FETCH NEXT FROM client_cursor INTO @distinctclient
+END;  
+  
+ CLOSE client_cursor;  
+ DEALLOCATE client_cursor;
+delete from Tax_Monthly_Profit_Summary
+ insert into Tax_Monthly_Profit_Summary(Client,TransSaleDate,
 Sum_Short_Term_Profit,Sum_Long_Term_Profit,DailySetOffLT ,DailySetOffST,Profit,OpeningBalLT,OpeningBalST,Adjusted_Short_Term,Adjusted_Long_Term,
-TaxableGain,ST_Tax,LT_Tax,ST_TaxPercentage,LT_TaxPercentage,ClosingBalLT,ClosingBalST)
+TaxableGain,ST_Tax,LT_Tax,ST_Surcharge,LT_Surcharge,ST_Cess,LT_Cess,ST_TaxPercentage,LT_TaxPercentage,ST_TaxTotal,LT_TaxTotal,ClosingBalLT,ClosingBalST)
  select  Client,TransSaleDate,
 Sum_Short_Term_Profit,Sum_Long_Term_Profit,DailySetOffLT ,DailySetOffST,Profit,OpeningBalLT,OpeningBalST,Adjusted_Short_Term,Adjusted_Long_Term,
-TaxableGain,ST_Tax,LT_Tax,ST_TaxPercentage,LT_TaxPercentage,ClosingBalLT,ClosingBalST from Client_Profit_Sums
- 
-    
+TaxableGain,ST_Tax,LT_Tax,ST_Surcharge,LT_Surcharge,ST_Cess,LT_Cess,ST_TaxPercentage,LT_TaxPercentage,ST_TaxTotal,LT_TaxTotal,ClosingBalLT,ClosingBalST from Client_Profit_Sums
+--select * from Tax_Daily_Profit_Summary order by Client 
+--select * from Client_Profit_Sums
+SELECT c.PAN_GIR,c.NAME as ClientName,
+t1.Adjusted_Short_Term,
+t1.Adjusted_Long_Term,
+case when t1.Adjusted_Short_Term>0 then t1.Adjusted_Short_Term else 0 end as ShortTermGain,
+case when t1.Adjusted_Long_Term>0 then t1.Adjusted_Long_Term else 0 end as LongTermGain,
+t1.* 
+FROM Tax_Monthly_Profit_Summary t1
+INNER JOIN (
+    SELECT Client, MAX(TransSaleDate) AS last_date_entry
+    FROM Tax_Monthly_Profit_Summary
+    WHERE MONTH(TransSaleDate) = MONTH(@to_date)
+      AND YEAR(TransSaleDate) = YEAR(@to_date)
+    GROUP BY Client
+) t2 ON t1.Client = t2.Client AND t1.TransSaleDate = t2.last_date_entry
+INNER JOIN client c ON t1.Client = c.CLIENTID
+WHERE t1.Adjusted_Short_Term > 0 or t1.Adjusted_Long_Term>0
+
+
  drop table Client_Profit_Sums  
 end
